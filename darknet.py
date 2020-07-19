@@ -73,6 +73,7 @@ def create_modules(blocks):
 
             if batch_normalize:
                 BN = nn.BatchNorm2d(filters)
+                module.add_module(f'BatchNorm2d_{index}', BN)
 
             if activation == 'leaky':
                 module.add_module(f'leaky{index}', nn.LeakyReLU(0.1, inplace=True))
@@ -137,7 +138,9 @@ class Darknet(nn.Module):
     def __init__(self, cfg_file):
         super(Darknet, self).__init__()
 
-        self.blocks = parse_cfg(cfg_file)
+        self.blocks = parse_cfg(cfg_file) #this is a dict containing all the layers of Darknet loaded from the cfg file
+
+        #module_list is a nn.ModuleList that contains sequential modules each containing exactly one layer of Darknet supplied by self.blocks
         self.net_info, self.module_list = create_modules(self.blocks)
 
 
@@ -192,7 +195,92 @@ class Darknet(nn.Module):
              outputs[i] = x
 
         return detection
-        
+
+    def load_weights(self, weights_file):
+
+        """
+            only the conv and batch norm layers contain weights
+        """
+
+        wf = open(weights_file, 'rb')
+
+        # the first 5 elements are header values
+        header = np.fromfile(wf, dtype=np.int32, count=5)
+
+        weights = np.fromfile(wf, dtype=np.float32)
+
+        #TODO: change to more appropriate name
+        ptr = 0
+        for i in range(len(self.module_list)):
+            module_type = self.blocks[i + 1]['type']
+
+            if module_type == 'convolutional':
+                model = self.module_list[i] # extract the sequential layer.
+
+                #check first if the conv layer contains batch_normalize layers
+                try:
+                    batch_normalize = int(self.blocks[i + 1]['batch_normalize'])
+                except:
+                    batch_normalize = 0
+
+                conv = model[0] #extract the conv layer from the sequencial layer.
+
+                if batch_normalize:
+                    BN = model[1]
+
+                    #get the number of biases element in the bias tensor of batch norm
+                    num_bn_bias = BN.bias.numel()
+
+                    #load the weights
+                    bn_bias = torch.from_numpy(weights[ptr:ptr + num_bn_bias])
+                    ptr += num_bn_bias
+
+                    # num_bn_weights = bn.weights.numel()
+                    assert BN.bias.numel() == BN.weight.numel()
+
+
+                    bn_weight = torch.from_numpy(weights[ptr:ptr + num_bn_bias])
+                    ptr += num_bn_bias
+
+                    bn_running_mean = torch.from_numpy(weights[ptr:ptr + num_bn_bias])
+                    ptr += num_bn_bias
+
+                    bn_running_variance = torch.from_numpy(weights[ptr:ptr + num_bn_bias])
+                    ptr += num_bn_bias
+
+                    assert BN.bias.data.size() == bn_bias.size()
+
+                    bn_bias = bn_bias.view_as(BN.bias.data)
+                    bn_weight = bn_weight.view_as(BN.weight.data)
+                    bn_running_variance = bn_running_variance.view_as(BN.running_var)
+                    bn_running_mean = bn_running_mean.view_as(BN.running_mean)
+
+                    BN.bias.data.copy_(bn_bias)
+                    BN.weight.data.copy_(bn_weight)
+                    BN.running_mean.copy_(bn_running_mean)
+                    BN.running_var.copy_(bn_running_variance)
+
+                else:
+                    num_bias = conv.bias.numel()
+
+
+                    conv_bias = torch.from_numpy(weights[ptr:ptr + num_bias])
+                    ptr += num_bias
+
+                    conv_biases = conv_bias.view_as(conv.bias.data)
+                    conv.bias.data.copy_(conv_bias)
+
+
+                num_weights = conv.weight.numel()
+
+                conv_weights = torch.from_numpy(weights[ptr:ptr + num_weights])
+                ptr += num_weights
+
+                conv_weights = conv_weights.view_as(conv.weight.data)
+                conv.weight.data.copy_(conv_weights)
+
+
+
 
 def get_test_input():
     img = cv2.imread("horses.jpg")
@@ -204,6 +292,91 @@ def get_test_input():
     return img_
 
 model = Darknet("yolov3.cfg")
-inp = get_test_input()
-pred = model(inp, torch.cuda.is_available())
-print (pred)
+model.load_weights('yolov3_best.weights')
+
+# inp = get_test_input()
+
+inp = cv2.imread('1.jpg')
+
+(H, W) = inp.shape[:2]
+
+blob = cv2.dnn.blobFromImage(inp, 1 / 255.0, (416, 416),
+	swapRB=True, crop=False)
+
+
+output = model(torch.from_numpy(blob), torch.cuda.is_available())
+
+output = output.numpy().squeeze()
+
+print(type(output))
+
+print(output.shape)
+
+# assert False
+
+LABELS = open('obj.names').read().strip().split("\n")
+# print(LABELS)
+# initialize a list of colors to represent each possible class label
+np.random.seed(42)
+COLORS = np.random.randint(0, 255, size=(len(LABELS), 3), dtype="uint8")
+
+
+boxes = []
+confidences = []
+classIDs = []
+
+for detection in output:
+    # extract the class ID and confidence (i.e., probability) of
+    # the current object detection
+    scores = detection[5:]
+    classID = np.argmax(scores)
+    confidence = scores[classID]
+    # filter out weak predictions by ensuring the detected
+    # probability is greater than the minimum probability
+    if confidence > .5:
+        # scale the bounding box coordinates back relative to the
+        # size of the image, keeping in mind that YOLO actually
+        # returns the center (x, y)-coordinates of the bounding
+        # box followed by the boxes' width and height
+        # box = detection[0:4]
+        box = detection[0:4] * np.array([W, H, W, H])
+        (centerX, centerY, width, height) = box.astype("int")
+        # use the center (x, y)-coordinates to derive the top and
+        # and left corner of the bounding box
+        x = int(centerX - (width / 2))
+        y = int(centerY - (height / 2))
+        # update our list of bounding box coordinates, confidences,
+        # and class IDs
+        boxes.append([x, y, int(width), int(height)])
+        confidences.append(float(confidence))
+        classIDs.append(classID)
+
+idxs = cv2.dnn.NMSBoxes(boxes, confidences, .7, .6)
+
+if len(idxs) > 0:
+    print('detections')
+    # loop over the indexes we are keeping
+    for i in idxs.flatten():
+    # extract the bounding box coordinates
+        (x, y) = (boxes[i][0], boxes[i][1])
+        (w, h) = (boxes[i][2], boxes[i][3])
+
+        color = [int(c) for c in COLORS[classIDs[i]]]
+
+        cv2.rectangle(inp, (x, y), (x + w, y + h), color, 1)
+        # text = "{}: {:.4f}".format(LABELS[classIDs[i]], confidences[i])
+        text = "{}".format(LABELS[classIDs[i]])
+        cv2.putText(inp, text, (x, y - 5), cv2.FONT_HERSHEY_SIMPLEX,
+        	0.5, color, 2)
+else:
+    print('no detections')
+
+
+cv2.imshow("Image", inp)
+cv2.waitKey(0)
+cv2.destroyAllWindows()
+# inp = get_test_input()
+# pred = model(inp, torch.cuda.is_available())
+# print (pred[0, 0, :])
+
+# print(create_modules(parse_cfg('yolov3.cfg')))

@@ -14,7 +14,7 @@ def predict_transform(prediction, input_dim, anchors, num_classes=10, CUDA=False
 
     batch_size = prediction.size(0)
 
-    stride = input_dim
+    stride = input_dim // prediction.size(2)
     grid_size = prediction.size(2)
     bbox_attrs = 5 + num_classes
     num_anchors = len(anchors)
