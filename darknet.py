@@ -6,6 +6,16 @@ from torch.autograd import Variable
 import numpy as np
 
 
+class EmptyLayer(nn.Module):
+    def __init__(self):
+        super(EmptyLayer, self).__init__()
+
+class DetectionLayer(nn.Module):
+    def __init__(self, anchors):
+        super(DetectionLayer, self).__init__()
+        self.anchors = anchors
+
+
 def parse_cfg(cfg_file):
     with open(cfg_file, 'r') as f:
         lines = f.read().split('\n')
@@ -58,6 +68,7 @@ def create_modules(blocks):
             conv = nn.Conv2d(prev_filters, filters, kernel_size, stride, padding, bias=bias)
             module.add_module(f'conv_{index}', conv)
 
+
             if batch_normalize:
                 BN = nn.BatchNorm2d(filters)
 
@@ -67,11 +78,56 @@ def create_modules(blocks):
         #TODO: Why are we using Upsampling
         #Upsampling layer
         elif x['type'] == 'upsample':
-            upsample = nn.UpSampling2D(scale_factor=int(x['stride']), mode='nearest')
+            upsample = nn.Upsample(scale_factor=int(x['stride']), mode='nearest')
             module.add_module(f'upsample_{index}', upsample)
 
         elif x['type'] == 'route':
-            x['layers'] = x['layers'].split(',') # retrieve the route layers
+            x['layers'] = [int(layer) for layer in x['layers'].split(',')] # retrieve the route layers
 
+            #here we make the assamption that start is always negative and end is always positive
+
+            #TODO: rename the variables start and end to reflet reality
             #start of a route
-            
+            start = x['layers'][0]
+
+            try:
+                end = x['layers'][1]
+                end = end - index
+            except IndexError as e:
+                end = 0
+
+            if end < 0:
+                filters = output_filters[start + index] + output_filters[end + index]
+            else:
+                filters = output_filters[start + index]
+
+            route = EmptyLayer()
+            module.add_module(f'route_{index}', route)
+
+
+
+        elif x['type'] == 'shortcut':
+
+            shortcut = EmptyLayer()
+            module.add_module(f'shortcut_{index}', shortcut)
+
+        elif x['type'] == 'yolo': #this is the detection layer
+             mask = [int(x) for x in x['mask'].split(',')]
+
+             anchors = [int(anchor) for anchor in x['anchors'].split(',')]
+             anchors = [(anchors[i], anchors[i + 1]) for i in range(0, len(anchors), 2)]
+             anchors = [anchors[i] for i in mask]
+
+             detection = DetectionLayer(anchors)
+             module.add_module(f'detection_{index}', detection)
+
+        else:
+            raise ValueError('No such layer: ', x['type'])
+
+        module_list.append(module)
+        prev_filters = filters
+        output_filters.append(filters)
+
+    return net_info, module_list
+
+#the daknet network
