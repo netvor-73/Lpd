@@ -4,6 +4,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.autograd import Variable
 import numpy as np
+from utils import predict_transform
+import cv2
 
 
 class EmptyLayer(nn.Module):
@@ -61,8 +63,8 @@ def create_modules(blocks):
                 bias = True
 
             filters = int(x['filters'])
-            padding = int(x['pad'])
             kernel_size = int(x['size'])
+            padding = kernel_size // 2
             stride = int(x['stride'])
 
             conv = nn.Conv2d(prev_filters, filters, kernel_size, stride, padding, bias=bias)
@@ -131,3 +133,77 @@ def create_modules(blocks):
     return net_info, module_list
 
 #the daknet network
+class Darknet(nn.Module):
+    def __init__(self, cfg_file):
+        super(Darknet, self).__init__()
+
+        self.blocks = parse_cfg(cfg_file)
+        self.net_info, self.module_list = create_modules(self.blocks)
+
+
+    def forward(self, x, CUDA):
+        modules = self.blocks[1:]
+        outputs = {} #save feature maps for later use.
+
+        write = False
+        for i, module in enumerate(modules):
+             module_type = module['type']
+
+             if module_type == 'convolutional' or module_type == 'upsample':
+                 x = self.module_list[i](x)
+
+                 # outputs[i] = x
+
+             elif module_type == 'route':
+
+                layers = [int(layer) for layer in module['layers']]
+
+                if len(layers) == 1: #here comes the detection layers and there for to detect in another scale we bring the feature map before the detection layers and feee it to an upsampling layer and continue.
+                    x = outputs[i + layers[0]]
+
+                else: #otherwise here we bring the feature maps of early layers and concatinate it with the current layer in order to benifit from the fine-grained features
+                    map1 = outputs[i + layers[0]]
+                    map2 = outputs[layers[1]]
+
+                    x = torch.cat((map1, map2), dim=1) # the tensor is of shape B, C, W, H, we concatinate along the C (channel wise)
+
+                # outputs[i] = x
+             elif module_type == 'shortcut':
+                 from_ = int(module['from'])
+                 x = outputs[i - 1] + outputs[i + from_]
+                # outputs[i] = x
+
+             elif module_type == 'yolo':
+                 anchors = self.module_list[i][0].anchors
+
+                 input_dim = int(self.net_info['height'])
+                 num_classes = int(module['classes'])
+
+                 x = x.data #get back the actual data of the FloatTensor
+                 x = predict_transform(x, input_dim, anchors, num_classes, CUDA)
+
+                 if not write:
+                     detection = x
+                     write = True
+
+                 else:
+                     detection = torch.cat((detection, x), 1)
+
+             outputs[i] = x
+
+        return detection
+        
+
+def get_test_input():
+    img = cv2.imread("horses.jpg")
+    img = cv2.resize(img, (416,416))          #Resize to the input dimension
+    img_ =  img[:,:,::-1].transpose((2,0,1))  # BGR -> RGB | H X W C -> C X H X W
+    img_ = img_[np.newaxis,:,:,:]/255.0       #Add a channel at 0 (for batch) | Normalise
+    img_ = torch.from_numpy(img_).float()     #Convert to float
+    img_ = Variable(img_)                     # Convert to Variable
+    return img_
+
+model = Darknet("yolov3.cfg")
+inp = get_test_input()
+pred = model(inp, torch.cuda.is_available())
+print (pred)
