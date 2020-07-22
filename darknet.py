@@ -4,8 +4,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.autograd import Variable
 import numpy as np
-from utils import predict_transform
+from utils import predict_transform, scale_boxes, yolo_boxes_to_corners
 import cv2
+from torchvision import ops
 
 
 class EmptyLayer(nn.Module):
@@ -161,10 +162,13 @@ class Darknet(nn.Module):
 
                 layers = [int(layer) for layer in module['layers']]
 
+
                 if len(layers) == 1: #here comes the detection layers and there for to detect in another scale we bring the feature map before the detection layers and feee it to an upsampling layer and continue.
+                    assert layers[0]
                     x = outputs[i + layers[0]]
 
                 else: #otherwise here we bring the feature maps of early layers and concatinate it with the current layer in order to benifit from the fine-grained features
+                    assert layers[0] < 0 and layers[1] > 0
                     map1 = outputs[i + layers[0]]
                     map2 = outputs[layers[1]]
 
@@ -273,6 +277,7 @@ class Darknet(nn.Module):
 
                 num_weights = conv.weight.numel()
 
+
                 conv_weights = torch.from_numpy(weights[ptr:ptr + num_weights])
                 ptr += num_weights
 
@@ -282,96 +287,189 @@ class Darknet(nn.Module):
 
 
 
-def get_test_input():
-    img = cv2.imread("horses.jpg")
+
+
+def get_test_input(img):
+    # img = cv2.imread(img_path)
     img = cv2.resize(img, (416,416))          #Resize to the input dimension
     img_ =  img[:,:,::-1].transpose((2,0,1))  # BGR -> RGB | H X W C -> C X H X W
     img_ = img_[np.newaxis,:,:,:]/255.0       #Add a channel at 0 (for batch) | Normalise
     img_ = torch.from_numpy(img_).float()     #Convert to float
     img_ = Variable(img_)                     # Convert to Variable
     return img_
-
+#
 model = Darknet("yolov3.cfg")
-model.load_weights('yolov3_best.weights')
+model.load_weights('yolov3.weights')
 
-# inp = get_test_input()
+inp = cv2.imread('person.jpg')
 
-inp = cv2.imread('1.jpg')
+image_shape = inp.shape[:2]
 
-(H, W) = inp.shape[:2]
-
-blob = cv2.dnn.blobFromImage(inp, 1 / 255.0, (416, 416),
-	swapRB=True, crop=False)
+output = model(get_test_input(inp), torch.cuda.is_available()).squeeze()
 
 
-output = model(torch.from_numpy(blob), torch.cuda.is_available())
-
-output = output.numpy().squeeze()
-
-print(type(output))
+# output = output.numpy().squeeze()
 
 print(output.shape)
 
 # assert False
+#
+LABELS = open('coco.names').read().strip().split("\n")
+# # print(LABELS)
+# # initialize a list of colors to represent each possible class label
+np.random.seed(42)
+COLORS = np.random.randint(0, 255, size=(len(LABELS), 3), dtype="uint8")
 
-LABELS = open('obj.names').read().strip().split("\n")
+
+def yolo_filter_boxes(box_confidence, boxes, box_class_probs, threshold=.6):
+
+    """
+    -box confidence is Pc
+    -boxes are the boxes with their corresponding 4 values
+    -box_class_probs are the scores or the probabilities of each class in a given bounding box
+    -threshold is the value by which to filter.
+    """
+
+    box_scores = box_confidence.unsqueeze(1) * box_class_probs
+
+    box_class_scores, box_classes = torch.max(box_scores, dim=-1) # the actual probability of the class
+
+    filtering_mask = box_class_scores >= threshold
+
+    assert box_class_scores.shape == filtering_mask.shape
+
+    # scores = box_class_scores * filtering_mask
+    # scores = scores[torch.nonzero(scores).squeeze()]
+
+    scores = torch.masked_select(box_class_scores, filtering_mask)
+
+    boxes = torch.masked_select(boxes, filtering_mask.unsqueeze(1).repeat(1, 4)).view(-1, 4)
+
+    # classes = box_classes * filtering_mask
+    # classes = classes[torch.nonzero(classes).squeeze()]
+    classes = torch.masked_select(box_classes, filtering_mask)
+
+    return scores, boxes, classes
+
+
+def yolo_non_max_suppression(scores, boxes, classes, iou_threshold=.5):
+
+    nms_indices = ops.nms(boxes, scores, iou_threshold)
+
+    scores = torch.gather(scores, dim=0, index=nms_indices)
+    boxes = torch.index_select(boxes, dim=0, index=nms_indices)
+    classes = torch.gather(classes, dim=0, index=nms_indices)
+
+    return scores, boxes, classes
+
+def yolo_eval(yolo_output, images_shape):
+
+    box_xy = yolo_output[:, :2]
+    box_wh = yolo_output[:, 2:4]
+
+    box_confidence = yolo_output[ :, 4]
+    box_class_probs = yolo_output[:, 5:]
+
+    boxes = yolo_boxes_to_corners(yolo_output[:, :2], yolo_output[:, 2:4])
+
+    # print(f'classes shape before filtering: {boxes.shape}')
+
+    scores, boxes, classes = yolo_filter_boxes(box_confidence, boxes, box_class_probs)
+
+    boxes = scale_boxes(boxes, images_shape)
+
+    scores, boxes, classes = yolo_non_max_suppression(scores, boxes, classes)
+
+    return scores, boxes, classes
+
+
+scores, boxes, classes = yolo_eval(output, images_shape=image_shape)
+
+print(f'scores shape: {scores.shape}')
+print(f'boxes shape: {boxes.shape}')
+print(f'classes shape: {classes.shape}')
+
+boxes = boxes.numpy()
+
+
+LABELS = open('coco.names').read().strip().split("\n")
 # print(LABELS)
 # initialize a list of colors to represent each possible class label
 np.random.seed(42)
 COLORS = np.random.randint(0, 255, size=(len(LABELS), 3), dtype="uint8")
 
-
-boxes = []
-confidences = []
-classIDs = []
-
-for detection in output:
-    # extract the class ID and confidence (i.e., probability) of
-    # the current object detection
-    scores = detection[5:]
-    classID = np.argmax(scores)
-    confidence = scores[classID]
-    # filter out weak predictions by ensuring the detected
-    # probability is greater than the minimum probability
-    if confidence > .5:
-        # scale the bounding box coordinates back relative to the
-        # size of the image, keeping in mind that YOLO actually
-        # returns the center (x, y)-coordinates of the bounding
-        # box followed by the boxes' width and height
-        # box = detection[0:4]
-        box = detection[0:4] * np.array([W, H, W, H])
-        (centerX, centerY, width, height) = box.astype("int")
-        # use the center (x, y)-coordinates to derive the top and
-        # and left corner of the bounding box
-        x = int(centerX - (width / 2))
-        y = int(centerY - (height / 2))
-        # update our list of bounding box coordinates, confidences,
-        # and class IDs
-        boxes.append([x, y, int(width), int(height)])
-        confidences.append(float(confidence))
-        classIDs.append(classID)
-
-idxs = cv2.dnn.NMSBoxes(boxes, confidences, .7, .6)
-
-if len(idxs) > 0:
-    print('detections')
-    # loop over the indexes we are keeping
-    for i in idxs.flatten():
+for index, i in enumerate(classes.numpy()):
+    print(i)
     # extract the bounding box coordinates
-        (x, y) = (boxes[i][0], boxes[i][1])
-        (w, h) = (boxes[i][2], boxes[i][3])
+    (x, y) = (boxes[index, 0], boxes[index, 1])
+    (w, h) = (boxes[index, 2], boxes[index, 3])
+    # draw a bounding box rectangle and label on the image
+    color = [int(c) for c in COLORS[i]]
 
-        color = [int(c) for c in COLORS[classIDs[i]]]
-
-        cv2.rectangle(inp, (x, y), (x + w, y + h), color, 1)
-        # text = "{}: {:.4f}".format(LABELS[classIDs[i]], confidences[i])
-        text = "{}".format(LABELS[classIDs[i]])
-        cv2.putText(inp, text, (x, y - 5), cv2.FONT_HERSHEY_SIMPLEX,
-        	0.5, color, 2)
-else:
-    print('no detections')
+    cv2.rectangle(inp, (int(x), int(y)), (int(x + w), int(y + h)), color, 1)
+    # text = "{}: {:.4f}".format(LABELS[classIDs[i]], confidences[i])
+    text = "{}".format(LABELS[i])
+    cv2.putText(inp, text, (int(x), int(y) - 5), cv2.FONT_HERSHEY_SIMPLEX,
+        0.5, color, 2)
 
 
+
+
+
+
+# boxes = []
+# confidences = []
+# classIDs = []
+#
+# for detection in output:
+#     # extract the class ID and confidence (i.e., probability) of
+#     # the current object detection
+#     scores = detection[5:]
+#     classID = np.argmax(scores)
+#     confidence = scores[classID]
+#     # filter out weak predictions by ensuring the detected
+#     # probability is greater than the minimum probability
+#     if confidence > .7:
+#         # scale the bounding box coordinates back relative to the
+#         # size of the image, keeping in mind that YOLO actually
+#         # returns the center (x, y)-coordinates of the bounding
+#         # box followed by the boxes' width and height
+#         box = detection[0:4]
+#         # box = detection[0:4] * np.array([W, H, W, H])
+#         (centerX, centerY, width, height) = box.astype("int")
+#         # use the center (x, y)-coordinates to derive the top and
+#         # and left corner of the bounding box
+#         x = int(centerX - (width / 2))
+#         y = int(centerY - (height / 2))
+#         # update our list of bounding box coordinates, confidences,
+#         # and class IDs
+#         boxes.append([x, y, int(width), int(height)])
+#         confidences.append(float(confidence))
+#         classIDs.append(classID)
+#
+# idxs = cv2.dnn.NMSBoxes(boxes, confidences, .5, .6)
+#
+# print(idxs)
+#
+# if len(idxs) > 0:
+#     print('detections')
+#     # loop over the indexes we are keeping
+#     for i in idxs.flatten():
+#     # extract the bounding box coordinates
+#         (x, y) = (boxes[i][0], boxes[i][1])
+#         (w, h) = (boxes[i][2], boxes[i][3])
+#
+#         color = [int(c) for c in COLORS[classIDs[i]]]
+#
+#         cv2.rectangle(inp, (x, y), (x + w, y + h), color, 1)
+#         # text = "{}: {:.4f}".format(LABELS[classIDs[i]], confidences[i])
+#         text = "{}".format(LABELS[classIDs[i]])
+#         cv2.putText(inp, text, (x, y - 5), cv2.FONT_HERSHEY_SIMPLEX,
+#         	0.5, color, 2)
+# else:
+#     print('no detections')
+# # #
+# # #
 cv2.imshow("Image", inp)
 cv2.waitKey(0)
 cv2.destroyAllWindows()
