@@ -143,6 +143,10 @@ class Darknet(nn.Module):
         self.net_info, self.module_list = create_modules(self.blocks)
 
 
+    def get_net_info(self):
+        return self.net_info
+
+
     def forward(self, x, CUDA):
         modules = self.blocks[1:]
         outputs = {} #save feature maps for later use.

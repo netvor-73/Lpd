@@ -83,9 +83,9 @@ def preprocess_image(img, inp_dim):
     return canvas
 
 
-def get_test_input(img):
+def get_input_to_network(img, inp_dim):
     # img = cv2.imread(img_path)
-    img = preprocess_image(img, (416, 416))          #Resize to the input dimension
+    img = preprocess_image(img, inp_dim)          #Resize to the input dimension
     # img = cv2.resize(img, (416, 416), interpolation = cv2.INTER_CUBIC)
     img_ =  img[:,:,::-1].transpose((2,0,1)).copy()  # BGR -> RGB | H X W C -> C X H X W
     img_ = img_[np.newaxis,:,:,:]/255.0       #Add a channel at 0 (for batch) | Normalise
@@ -112,15 +112,10 @@ def yolo_filter_boxes(box_confidence, boxes, box_class_probs, threshold=.6):
 
     assert box_class_scores.shape == filtering_mask.shape
 
-    # scores = box_class_scores * filtering_mask
-    # scores = scores[torch.nonzero(scores).squeeze()]
-
     scores = torch.masked_select(box_class_scores, filtering_mask)
 
     boxes = torch.masked_select(boxes, filtering_mask.unsqueeze(1).repeat(1, 4)).view(-1, 4)
 
-    # classes = box_classes * filtering_mask
-    # classes = classes[torch.nonzero(classes).squeeze()]
     classes = torch.masked_select(box_classes, filtering_mask)
 
     return scores, boxes, classes
@@ -130,9 +125,9 @@ def yolo_non_max_suppression(scores, boxes, classes, iou_threshold=.5):
 
     nms_indices = ops.nms(boxes, scores, iou_threshold)
 
-    scores = torch.gather(scores, dim=0, index=nms_indices)
+    scores = torch.index_select(scores, dim=0, index=nms_indices)
     boxes = torch.index_select(boxes, dim=0, index=nms_indices)
-    classes = torch.gather(classes, dim=0, index=nms_indices)
+    classes = torch.index_select(classes, dim=0, index=nms_indices)
 
     return scores, boxes, classes
 
