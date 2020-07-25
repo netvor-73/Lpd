@@ -1,5 +1,6 @@
 # Lpd
 This repo implements the yolov3 algorithm
+# Usage
+In order to detect in an image
 
-# Issues
-This is not complete yet, there is a little problem with the output bounding boxes. TO be fixes soon
+<code> python3 licence_plate_detector.py -i path/to/image </code>
