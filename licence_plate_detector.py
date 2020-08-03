@@ -11,8 +11,8 @@ ap.add_argument('-i', '--image', required=True,
 
 args = vars(ap.parse_args())
 
-model = Darknet("cfg/obj.cfg")
-model.load_weights('weights/yolov3_best.weights')
+model = Darknet("cfg/yolov3.cfg")
+model.load_weights('weights/yolov3.weights')
 
 model.eval()
 
@@ -29,11 +29,11 @@ blob = get_input_to_network(img, inp_dim=(input_dim, input_dim))
 with torch.no_grad():
     output = model(blob, torch.cuda.is_available()).squeeze()
 
-LABELS = open('names/obj.names').read().strip().split("\n")
+LABELS = open('names/coco.names').read().strip().split("\n")
 np.random.seed(42)
 COLORS = np.random.randint(0, 255, size=(len(LABELS), 3), dtype="uint8")
 
-scores, boxes, classes = yolo_eval(output, image_shape=image_shape)
+scores, boxes, classes = yolo_eval(output)
 
 boxes = boxes.numpy()
 

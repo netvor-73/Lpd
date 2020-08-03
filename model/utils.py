@@ -131,7 +131,7 @@ def yolo_non_max_suppression(scores, boxes, classes, iou_threshold=.5):
 
     return scores, boxes, classes
 
-def yolo_eval(yolo_output, image_shape):
+def yolo_eval(yolo_output):
 
     box_xy = yolo_output[:, :2]
     box_wh = yolo_output[:, 2:4]
