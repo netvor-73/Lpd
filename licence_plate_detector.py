@@ -9,10 +9,18 @@ ap = argparse.ArgumentParser()
 ap.add_argument('-i', '--image', required=True,
 	help='path to input image')
 
+ap.add_argument('-c', '--cfg', required=True,
+	help='path to cfg file')
+
+ap.add_argument('-w', '--weights', required=True,
+	help='path to weights file')
+
+ap.add_argument('-l', '--labels', required=True,
+	help='path to labels file')
 args = vars(ap.parse_args())
 
-model = Darknet("cfg/yolov3.cfg")
-model.load_weights('weights/yolov3.weights')
+model = Darknet(args['cfg'])
+model.load_weights(args['weights'])
 
 model.eval()
 
@@ -29,7 +37,7 @@ blob = get_input_to_network(img, inp_dim=(input_dim, input_dim))
 with torch.no_grad():
     output = model(blob, torch.cuda.is_available()).squeeze()
 
-LABELS = open('names/coco.names').read().strip().split("\n")
+LABELS = open(args['labels']).read().strip().split("\n")
 np.random.seed(42)
 COLORS = np.random.randint(0, 255, size=(len(LABELS), 3), dtype="uint8")
 
