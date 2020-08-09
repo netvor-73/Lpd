@@ -7,10 +7,10 @@ import cv2
 
 class YoloAnnotationDataset(Dataset):
 
-    def __init__(self, root_dir, seed):
+    def __init__(self, root_dir):
         self.root_dir = root_dir
         self.image_names = [image for image in os.listdir(self.root_dir) if '.jpg' in image]
-        self.seed = seed
+
 
     def __len__(self):
         return len(self.image_names)
@@ -19,9 +19,6 @@ class YoloAnnotationDataset(Dataset):
     def __getitem__(self, index):
         if torch.is_tensor(index):
             index.tolist()
-
-        np.random.seed(self.seed)
-        np.random.shuffle(self.image_names)
 
         image_path = os.path.join(self.root_dir, self.image_names[index])
 
@@ -35,6 +32,7 @@ class YoloAnnotationDataset(Dataset):
             file = [i.strip() for i in file]
             bbox = np.array([box.split(' ') for box in file])
 
-        sample = {'image': image, 'bbox': bbox.astype(np.float32).reshape(-1, 5)}
+        sample = {'image': image,
+                  'bbox': bbox.astype(np.float32).reshape(-1, 5)}
 
         return sample
